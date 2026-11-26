@@ -9,7 +9,6 @@ namespace sonic {
 class TrackControlsPanel : public juce::Component
 {
 public:
-    // Должны совпадать с TimelineEditor
     static constexpr int kRulerHeight = 26;
     static constexpr int kTrackHeight = 76;
 
@@ -33,6 +32,7 @@ public:
 
             raw->name.setText (t.name, juce::dontSendNotification);
             raw->name.setColour (juce::Label::textColourId, juce::Colours::lightgrey);
+            raw->name.setFont (juce::FontOptions (13.0f));
 
             raw->mute.setButtonText ("M");
             raw->mute.setClickingTogglesState (true);
@@ -53,10 +53,18 @@ public:
                 model_.setTrackGain (i, (float) raw->gain.getValue());
             };
 
+            raw->pan.setRange (-1.0, 1.0, 0.01);
+            raw->pan.setValue (t.pan, juce::dontSendNotification);
+            raw->pan.onValueChange = [this, i, raw]
+            {
+                model_.setTrackPan (i, (float) raw->pan.getValue());
+            };
+
             addAndMakeVisible (raw->name);
             addAndMakeVisible (raw->mute);
             addAndMakeVisible (raw->solo);
             addAndMakeVisible (raw->gain);
+            addAndMakeVisible (raw->pan);
 
             rows_.push_back (std::move (row));
         }
@@ -79,15 +87,19 @@ public:
         for (int i = 0; i < (int) rows_.size(); ++i)
         {
             juce::Rectangle<int> row (0, kRulerHeight + i * kTrackHeight, getWidth(), kTrackHeight);
-            row.reduce (6, 4);
+            row.reduce (6, 3);
 
-            rows_[(size_t) i]->name.setBounds (row.removeFromTop (18));
-            auto buttons = row.removeFromTop (24);
-            rows_[(size_t) i]->mute.setBounds (buttons.removeFromLeft (28));
-            buttons.removeFromLeft (4);
-            rows_[(size_t) i]->solo.setBounds (buttons.removeFromLeft (28));
+            auto top = row.removeFromTop (20);
+            rows_[(size_t) i]->name.setBounds (top.removeFromLeft (top.getWidth() - 66));
+            top.removeFromLeft (4);
+            rows_[(size_t) i]->mute.setBounds (top.removeFromLeft (28));
+            top.removeFromLeft (4);
+            rows_[(size_t) i]->solo.setBounds (top.removeFromLeft (28));
+
             row.removeFromTop (2);
-            rows_[(size_t) i]->gain.setBounds (row.removeFromTop (22));
+            rows_[(size_t) i]->gain.setBounds (row.removeFromTop (20));
+            row.removeFromTop (2);
+            rows_[(size_t) i]->pan.setBounds (row.removeFromTop (18));
         }
     }
 
@@ -97,6 +109,7 @@ private:
         juce::Label name;
         juce::TextButton mute, solo;
         juce::Slider gain { juce::Slider::LinearBar, juce::Slider::NoTextBox };
+        juce::Slider pan  { juce::Slider::LinearBar, juce::Slider::NoTextBox };
     };
 
     ProjectModel& model_;

@@ -5,28 +5,31 @@
 
 namespace sonic::engine {
 
-// Время в СЕКУНДАХ: смена sample rate устройства не двигает аранжировку.
 struct Clip
 {
-    const AudioData* source = nullptr;   // не владеет
+    const AudioData* source = nullptr;
     int    id            = 0;
     double startSeconds  = 0.0;
     double lengthSeconds = 0.0;
-    double offsetSeconds = 0.0;          // с какого места файла играем
+    double offsetSeconds = 0.0;
     float  gain          = 1.0f;
+    double fadeInSeconds  = 0.0;
+    double fadeOutSeconds = 0.0;
 };
 
 struct Track
 {
     std::vector<Clip> clips;
     float gain = 1.0f;
+    float pan  = 0.0f;      // -1..1
     bool  mute = false;
     bool  solo = false;
 };
 
 enum class CommandType : int
 {
-    addTrack, addClip, removeClip, moveClip, setTrackGain, setTrackMute, setTrackSolo
+    addTrack, addClip, removeClip, moveClip, setClipShape, setClipFades,
+    setTrackGain, setTrackPan, setTrackMute, setTrackSolo
 };
 
 struct Command
@@ -43,19 +46,17 @@ struct Command
     bool  flag  = false;
 };
 
-// ПРИНАДЛЕЖИТ АУДИОПОТОКУ. UI сюда не заходит никогда.
 class Arrangement
 {
 public:
-    static constexpr int kMaxTracks         = 16;
-    static constexpr int kMaxClipsPerTrack  = 512;
+    static constexpr int kMaxTracks        = 16;
+    static constexpr int kMaxClipsPerTrack = 512;
 
-    // Вызывать до регистрации аудио-callback.
     void prepare()
     {
         tracks_.resize ((size_t) kMaxTracks);
         for (auto& t : tracks_)
-            t.clips.reserve ((size_t) kMaxClipsPerTrack);   // дальше аллокаций не будет
+            t.clips.reserve ((size_t) kMaxClipsPerTrack);
         activeTracks_ = 0;
     }
 
@@ -72,7 +73,8 @@ public:
                 if (auto* t = mutableTrack (c.trackIndex))
                     if (c.source != nullptr && t->clips.size() < (size_t) kMaxClipsPerTrack)
                         t->clips.push_back (Clip { c.source, c.clipId, c.startSeconds,
-                                                   c.lengthSeconds, c.offsetSeconds, 1.0f });
+                                                   c.lengthSeconds, c.offsetSeconds,
+                                                   1.0f, 0.0, 0.0 });
                 break;
 
             case CommandType::removeClip:
@@ -87,11 +89,8 @@ public:
                         if (it->id == c.clipId)
                         {
                             if (c.targetTrackIndex == c.trackIndex)
-                            {
                                 it->startSeconds = c.startSeconds;
-                            }
                             else if (auto* dst = mutableTrack (c.targetTrackIndex))
-                            {
                                 if (dst->clips.size() < (size_t) kMaxClipsPerTrack)
                                 {
                                     auto moved = *it;
@@ -99,13 +98,39 @@ public:
                                     dst->clips.push_back (moved);
                                     t->clips.erase (it);
                                 }
-                            }
+                            break;
+                        }
+                break;
+
+            case CommandType::setClipShape:
+                if (auto* t = mutableTrack (c.trackIndex))
+                    for (auto& clip : t->clips)
+                        if (clip.id == c.clipId)
+                        {
+                            clip.startSeconds  = c.startSeconds;
+                            clip.lengthSeconds = c.lengthSeconds;
+                            clip.offsetSeconds = c.offsetSeconds;
+                            break;
+                        }
+                break;
+
+            case CommandType::setClipFades:
+                if (auto* t = mutableTrack (c.trackIndex))
+                    for (auto& clip : t->clips)
+                        if (clip.id == c.clipId)
+                        {
+                            clip.fadeInSeconds  = c.startSeconds;
+                            clip.fadeOutSeconds = c.lengthSeconds;
                             break;
                         }
                 break;
 
             case CommandType::setTrackGain:
                 if (auto* t = mutableTrack (c.trackIndex)) t->gain = c.value;
+                break;
+
+            case CommandType::setTrackPan:
+                if (auto* t = mutableTrack (c.trackIndex)) t->pan = c.value;
                 break;
 
             case CommandType::setTrackMute:
@@ -128,6 +153,27 @@ public:
             for (const auto& c : tracks_[(size_t) i].clips)
                 end = std::max (end, c.startSeconds + c.lengthSeconds);
         return end;
+    }
+
+    // Только для оффлайн-сборки и тестов. НЕ вызывать из аудиопотока.
+    void setupTrack (int i, float gain, float pan, bool mute, bool solo) noexcept
+    {
+        if (auto* t = mutableTrack (i))
+        {
+            t->gain = gain; t->pan = pan; t->mute = mute; t->solo = solo;
+        }
+    }
+
+    void setupClip (int i, int clipId, double fadeIn, double fadeOut) noexcept
+    {
+        if (auto* t = mutableTrack (i))
+            for (auto& c : t->clips)
+                if (c.id == clipId)
+                {
+                    c.fadeInSeconds = fadeIn;
+                    c.fadeOutSeconds = fadeOut;
+                    break;
+                }
     }
 
 private:

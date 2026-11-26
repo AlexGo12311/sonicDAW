@@ -1,6 +1,7 @@
 #pragma once
 #include <JuceHeader.h>
 #include "app/AudioEngine.h"
+#include "app/OfflineRenderer.h"
 #include "app/ProjectModel.h"
 #include "app/TimelineEditor.h"
 #include "app/TrackControlsPanel.h"
@@ -19,6 +20,7 @@ public:
 private:
     void timerCallback() override;
     void openFileClicked();
+    void bounceClicked();
     void refreshTrackBox();
     static juce::String formatTime (double seconds);
 
@@ -34,6 +36,7 @@ private:
 
     juce::TextButton loadButton_     { "Load audio..." };
     juce::TextButton addTrackButton_ { "+ Track" };
+    juce::TextButton bounceButton_   { "Bounce WAV..." };
     juce::ComboBox   targetTrackBox_;
 
     juce::TextButton playButton_ { "Play" };
@@ -44,6 +47,7 @@ private:
     juce::Label timeLabel_ { {}, "00:00.000" };
 
     juce::ToggleButton snapToggle_ { "Snap" };
+    juce::ToggleButton loopToggle_ { "Loop" };
     juce::ToggleButton toneToggle_ { "Tone" };
 
     juce::Label  gainLabel_  { {}, "Master" };
@@ -51,7 +55,7 @@ private:
 
     juce::Label  tempoLabel_ { {}, "BPM" };
     juce::Slider tempoSlider_ { juce::Slider::IncDecButtons, juce::Slider::TextBoxLeft };
-    juce::Label  zoomLabel_ { {}, "Zoom" };
+    juce::Label  zoomLabel_  { {}, "Zoom" };
     juce::Slider zoomSlider_ { juce::Slider::LinearHorizontal, juce::Slider::NoTextBox };
 
     std::unique_ptr<juce::FileChooser> chooser_;

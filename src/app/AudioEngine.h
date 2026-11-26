@@ -4,8 +4,8 @@
 #include "engine/Arrangement.h"
 #include "engine/CommandQueue.h"
 #include "engine/Oscillator.h"
+#include "engine/Renderer.h"
 #include "engine/Transport.h"
-#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -28,13 +28,14 @@ public:
             return nullptr;
 
         const auto* raw = data.get();
-        ownedAudio_.push_back (std::move (data));   // живёт до конца сессии
+        ownedAudio_.push_back (std::move (data));
         return raw;
     }
 
     bool send (const engine::Command& c) noexcept { return queue_.push (c); }
 
     void setMasterGain (float g) noexcept  { masterGain_.store (g, std::memory_order_relaxed); }
+    float masterGain() const noexcept      { return masterGain_.load (std::memory_order_relaxed); }
     void setToneEnabled (bool on) noexcept { toneOn_.store (on, std::memory_order_relaxed); }
 
     // ================= AUDIO THREAD =================
@@ -42,6 +43,8 @@ public:
     {
         deviceSampleRate_ = device->getCurrentSampleRate();
         transport_.prepare (deviceSampleRate_);
+        renderer_.prepare (deviceSampleRate_);
+        renderer_.setSmoothing (true);
         oscillator_.prepare (deviceSampleRate_);
         gain_ = 0.0f;
     }
@@ -61,24 +64,59 @@ public:
     {
         juce::ignoreUnused (inputChannelData, numInputChannels, context);
 
-        // 1. Применяем правки от UI к своей приватной аранжировке
         engine::Command cmd;
         while (queue_.pop (cmd))
             arrangement_.apply (cmd);
 
-        // 2. Обнуляем шины
         for (int ch = 0; ch < numOutputChannels; ++ch)
             if (auto* out = outputChannelData[ch])
                 juce::FloatVectorOperations::clear (out, numSamples);
 
         const auto blockStart = transport_.positionFrames();
         const bool playing = transport_.isPlaying();
+        const double sr = deviceSampleRate_;
 
-        // 3. Рендер аранжировки
-        if (playing && deviceSampleRate_ > 0.0)
-            renderArrangement (outputChannelData, numOutputChannels, numSamples, blockStart);
+        // параметры лупа
+        bool loopValid = false;
+        std::int64_t loopStartF = 0, loopEndF = 0, loopSpan = 0;
+        if (transport_.isLoopEnabled() && sr > 0.0)
+        {
+            loopStartF = (std::int64_t) std::llround (transport_.loopStartSeconds() * sr);
+            loopEndF   = (std::int64_t) std::llround (transport_.loopEndSeconds() * sr);
+            loopSpan   = loopEndF - loopStartF;
+            loopValid  = loopSpan > 0;
+        }
 
-        // 4. Тестовый тон
+        std::int64_t newPos = blockStart + numSamples;
+
+        if (playing && sr > 0.0)
+        {
+            std::int64_t pos = blockStart;
+            int done = 0;
+
+            // Рендерим кусками: при пересечении границы лупа перематываем
+            // посреди блока — это и есть sample-accurate луп.
+            while (done < numSamples)
+            {
+                int n = numSamples - done;
+
+                if (loopValid)
+                {
+                    if (pos >= loopEndF)
+                        pos = loopStartF + ((pos - loopStartF) % loopSpan);
+                    n = (int) juce::jmin ((std::int64_t) n, loopEndF - pos);
+                }
+
+                renderer_.render (arrangement_, outputChannelData, numOutputChannels,
+                                  n, pos, done);
+                pos  += n;
+                done += n;
+            }
+
+            newPos = pos;
+        }
+
+        // тестовый тон
         if (toneOn_.load (std::memory_order_relaxed))
         {
             int offset = 0;
@@ -87,7 +125,6 @@ public:
                 const int n = juce::jmin (numSamples - offset, kMaxBlockSize);
                 for (int i = 0; i < n; ++i)
                     toneBuffer_[(size_t) i] = oscillator_.nextSample() * kToneLevel;
-
                 for (int ch = 0; ch < numOutputChannels; ++ch)
                     if (auto* out = outputChannelData[ch])
                         juce::FloatVectorOperations::add (out + offset, toneBuffer_.data(), n);
@@ -95,7 +132,7 @@ public:
             }
         }
 
-        // 5. Мастер-гейн с рампой
+        // мастер-гейн с рампой
         const float target = masterGain_.load (std::memory_order_relaxed);
         int offset = 0;
         while (offset < numSamples)
@@ -112,80 +149,31 @@ public:
             offset += n;
         }
 
-        // 6. Плейhed
         if (playing)
         {
-            transport_.advance (numSamples);
-            const double end = arrangement_.endSeconds();
-            if (end <= 0.0
-                || (double) (blockStart + numSamples) / deviceSampleRate_ >= end)
-                transport_.stop();
-        }
-    }
+            transport_.setPositionFrames (newPos);
 
-private:
-    void renderArrangement (float* const* outputs, int numOut, int numSamples,
-                            std::int64_t blockStart) noexcept
-    {
-        const auto blockEnd = blockStart + numSamples;
-        const double sr = deviceSampleRate_;
-
-        bool anySolo = false;
-        for (int t = 0; t < arrangement_.numTracks(); ++t)
-            anySolo = anySolo || arrangement_.track (t).solo;
-
-        for (int t = 0; t < arrangement_.numTracks(); ++t)
-        {
-            const auto& track = arrangement_.track (t);
-            if (track.mute || (anySolo && ! track.solo))
-                continue;
-
-            for (const auto& clip : track.clips)
+            if (! loopValid)
             {
-                const auto* src = clip.source;
-                if (src == nullptr || ! src->isValid())
-                    continue;
-
-                // SAMPLE-ACCURATE: границы клипа вычисляются в сэмплах,
-                // пересечение с блоком — точное, без округления до блока.
-                const auto clipStart = (std::int64_t) std::llround (clip.startSeconds * sr);
-                const auto clipEnd   = clipStart + (std::int64_t) std::llround (clip.lengthSeconds * sr);
-                const auto from = std::max (blockStart, clipStart);
-                const auto to   = std::min (blockEnd, clipEnd);
-                if (to <= from)
-                    continue;
-
-                const double ratio = src->sampleRate / sr;
-                const double offsetFrames = clip.offsetSeconds * src->sampleRate;
-                const float g = clip.gain * track.gain;
-
-                for (int ch = 0; ch < numOut; ++ch)
-                {
-                    auto* out = outputs[ch];
-                    if (out == nullptr)
-                        continue;
-
-                    const int srcCh = juce::jmin (ch, src->numChannels - 1);
-                    for (auto f = from; f < to; ++f)
-                    {
-                        const double srcFrame = (double) (f - clipStart) * ratio + offsetFrames;
-                        out[(int) (f - blockStart)] += src->sampleLinear (srcCh, srcFrame) * g;
-                    }
-                }
+                const double end = arrangement_.endSeconds();
+                if (end <= 0.0 || (double) newPos / sr >= end)
+                    transport_.stop();
             }
         }
     }
 
+private:
     static constexpr int   kMaxBlockSize = 8192;
     static constexpr float kSmoothing    = 0.001f;
     static constexpr float kToneLevel    = 0.10f;
 
     engine::Transport  transport_;
     engine::Oscillator oscillator_;
-    engine::Arrangement arrangement_;                        // только audio thread
+    engine::Renderer   renderer_;
+    engine::Arrangement arrangement_;
     engine::CommandQueue<engine::Command, 1024> queue_;
 
-    std::vector<std::unique_ptr<engine::AudioData>> ownedAudio_; // только message thread
+    std::vector<std::unique_ptr<engine::AudioData>> ownedAudio_;
 
     std::atomic<float> masterGain_ { 0.8f };
     std::atomic<bool>  toneOn_     { false };

@@ -9,6 +9,7 @@ MainComponent::MainComponent()
     {
         trackPanel_.refresh();
         refreshTrackBox();
+        loopToggle_.setToggleState (model_.isLoopEnabled(), juce::dontSendNotification);
         timeline_.repaint();
     };
 
@@ -27,6 +28,9 @@ MainComponent::MainComponent()
     addAndMakeVisible (addTrackButton_);
     addTrackButton_.onClick = [this] { model_.addTrack(); };
 
+    addAndMakeVisible (bounceButton_);
+    bounceButton_.onClick = [this] { bounceClicked(); };
+
     addAndMakeVisible (targetTrackBox_);
     refreshTrackBox();
 
@@ -34,7 +38,7 @@ MainComponent::MainComponent()
     playButton_.onClick = [this]
     {
         auto& t = engine_.transport();
-        if (t.positionSeconds() >= model_.lengthSeconds() - 0.001)
+        if (! t.isLoopEnabled() && t.positionSeconds() >= model_.lengthSeconds() - 0.001)
             t.locateSeconds (0.0);
         t.play();
     };
@@ -51,6 +55,9 @@ MainComponent::MainComponent()
     snapToggle_.setToggleState (true, juce::dontSendNotification);
     snapToggle_.onClick = [this] { timeline_.setSnapEnabled (snapToggle_.getToggleState()); };
     addAndMakeVisible (snapToggle_);
+
+    loopToggle_.onClick = [this] { model_.setLoopEnabled (loopToggle_.getToggleState()); };
+    addAndMakeVisible (loopToggle_);
 
     toneToggle_.onClick = [this] { engine_.setToneEnabled (toneToggle_.getToggleState()); };
     addAndMakeVisible (toneToggle_);
@@ -82,7 +89,7 @@ MainComponent::MainComponent()
     deviceManager_.addAudioCallback (&engine_);
 
     startTimerHz (15);
-    setSize (1120, 780);
+    setSize (1160, 800);
 }
 
 MainComponent::~MainComponent()
@@ -121,7 +128,6 @@ void MainComponent::openFileClicked()
                                const int track = targetTrackBox_.getSelectedId() - 1;
                                juce::String error;
 
-                               // вставляем клип туда, где стоит плейhed
                                if (model_.addClipFromFile (track, f,
                                                            engine_.transport().positionSeconds(),
                                                            error))
@@ -129,6 +135,32 @@ void MainComponent::openFileClicked()
                                                        juce::dontSendNotification);
                                else
                                    fileLabel_.setText ("ERROR: " + error,
+                                                       juce::dontSendNotification);
+                           });
+}
+
+void MainComponent::bounceClicked()
+{
+    chooser_ = std::make_unique<juce::FileChooser> ("Bounce project to WAV",
+                                                    juce::File{}, "*.wav");
+
+    chooser_->launchAsync (juce::FileBrowserComponent::saveMode
+                             | juce::FileBrowserComponent::canSelectFiles,
+                           [this] (const juce::FileChooser& fc)
+                           {
+                               auto f = fc.getResult();
+                               if (f == juce::File{})
+                                   return;
+
+                               if (! f.hasFileExtension ("wav"))
+                                   f = f.withFileExtension ("wav");
+
+                               juce::String error;
+                               if (sonic::OfflineRenderer::renderToFile (model_, engine_, f, error))
+                                   fileLabel_.setText ("Bounced: " + f.getFileName(),
+                                                       juce::dontSendNotification);
+                               else
+                                   fileLabel_.setText ("Bounce ERROR: " + error,
                                                        juce::dontSendNotification);
                            });
 }
@@ -159,11 +191,13 @@ void MainComponent::resized()
     auto r = getLocalBounds().reduced (12);
 
     auto row1 = r.removeFromTop (30);
-    loadButton_.setBounds (row1.removeFromLeft (140));
+    loadButton_.setBounds (row1.removeFromLeft (130));
     row1.removeFromLeft (8);
-    addTrackButton_.setBounds (row1.removeFromLeft (100));
+    addTrackButton_.setBounds (row1.removeFromLeft (90));
     row1.removeFromLeft (8);
-    targetTrackBox_.setBounds (row1.removeFromLeft (140));
+    targetTrackBox_.setBounds (row1.removeFromLeft (130));
+    row1.removeFromLeft (8);
+    bounceButton_.setBounds (row1.removeFromLeft (130));
     row1.removeFromLeft (12);
     fileLabel_.setBounds (row1);
 
@@ -175,9 +209,10 @@ void MainComponent::resized()
     row2.removeFromLeft (6);
     zeroButton_.setBounds (row2.removeFromLeft (50));
     row2.removeFromLeft (12);
-    timeLabel_.setBounds (row2.removeFromLeft (190));
-    snapToggle_.setBounds (row2.removeFromLeft (80));
-    toneToggle_.setBounds (row2.removeFromLeft (80));
+    timeLabel_.setBounds (row2.removeFromLeft (180));
+    snapToggle_.setBounds (row2.removeFromLeft (70));
+    loopToggle_.setBounds (row2.removeFromLeft (70));
+    toneToggle_.setBounds (row2.removeFromLeft (70));
     gainLabel_.setBounds (row2.removeFromLeft (50));
     gainSlider_.setBounds (row2);
 
