@@ -1,0 +1,28 @@
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Скомпилированные бинарники
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+Synapse_server
+
+# База данных
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+#cmake
+build/
+cmake-build-*/
+.cache/
+.vscode/ipch/
+compile_commands.json
+.DS_Store
